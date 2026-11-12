@@ -107,7 +107,24 @@ let target:THREE.Vector3|null=null,activeRoom:Room|null=null;
 const keys=new Set<string>(),joy=new THREE.Vector2();
 let audio:AudioContext|undefined,noise:AudioBuffer|undefined;
 function unlockAudio(){if(muted)return;audio??=new AudioContext();void audio.resume();if(!noise){noise=audio.createBuffer(1,audio.sampleRate*.2,audio.sampleRate);const data=noise.getChannelData(0);for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;}}
-function rustle(speed:number){if(muted||!audio||audio.state!=='running'||!noise)return;const src=audio.createBufferSource();src.buffer=noise;src.playbackRate.value=.72+Math.random()*.2;const filter=audio.createBiquadFilter();filter.type='bandpass';filter.frequency.value=1450+Math.random()*450;filter.Q.value=.7;const gain=audio.createGain();const t=audio.currentTime;gain.gain.setValueAtTime(0,t);gain.gain.linearRampToValueAtTime(.034*speed,t+.035);gain.gain.exponentialRampToValueAtTime(.001,t+.17);src.connect(filter).connect(gain).connect(audio.destination);src.start();src.stop(t+.22);src.onended=()=>{src.disconnect();filter.disconnect();gain.disconnect();};}
+function rustle(weight:number){
+ if(muted||!audio||audio.state!=='running'||!noise)return;
+ const t=audio.currentTime;
+ // A soft sole impact under the paper scrape, rather than a bright hop.
+ const impact=audio.createOscillator();impact.type='sine';
+ impact.frequency.setValueAtTime(155+Math.random()*12,t);
+ impact.frequency.exponentialRampToValueAtTime(68,t+.085);
+ const impactGain=audio.createGain();impactGain.gain.setValueAtTime(.001,t);
+ impactGain.gain.linearRampToValueAtTime(.085*weight,t+.009);
+ impactGain.gain.exponentialRampToValueAtTime(.001,t+.14);
+ impact.connect(impactGain).connect(audio.destination);impact.start(t);impact.stop(t+.16);
+ impact.onended=()=>{impact.disconnect();impactGain.disconnect();};
+ const src=audio.createBufferSource();src.buffer=noise;src.playbackRate.value=.65+Math.random()*.12;
+ const filter=audio.createBiquadFilter();filter.type='bandpass';filter.frequency.value=1050+Math.random()*220;filter.Q.value=.6;
+ const gain=audio.createGain();gain.gain.setValueAtTime(0,t);gain.gain.linearRampToValueAtTime(.028*weight,t+.025);gain.gain.exponentialRampToValueAtTime(.001,t+.21);
+ src.connect(filter).connect(gain).connect(audio.destination);src.start(t);src.stop(t+.24);
+ src.onended=()=>{src.disconnect();filter.disconnect();gain.disconnect();};
+}
 function toast(message:string){const e=document.querySelector<HTMLDivElement>('#toast')!;e.textContent=message;e.classList.add('visible');window.clearTimeout(toastTimer);toastTimer=window.setTimeout(()=>e.classList.remove('visible'),2600);}let toastTimer=0;
 const welcome=document.querySelector<HTMLElement>('#welcome')!;
 document.querySelector('#start')!.addEventListener('click',()=>{started=true;welcome.classList.add('leaving');presence.start();unlockAudio();setTimeout(()=>welcome.hidden=true,700);});
@@ -160,9 +177,9 @@ function animateRemotes(dt:number,now:number){for(const r of remotes.values()){
  const motion=r.target.moving&&now-r.lastUpdate<450;
  r.root.position.x=THREE.MathUtils.damp(r.root.position.x,r.target.x,13,dt);r.root.position.z=THREE.MathUtils.damp(r.root.position.z,r.target.z,13,dt);
  r.root.rotation.y+=Math.atan2(Math.sin(r.target.yaw-r.root.rotation.y),Math.cos(r.target.yaw-r.root.rotation.y))*Math.min(1,dt*12);
- if(motion)r.phase+=dt*8.5;const stride=motion?Math.sin(r.phase):0;
- for(let i=0;i<2;i++){const goal=stride*(i?1:-1)*.29;r.legs[i].rotation.x=THREE.MathUtils.damp(r.legs[i].rotation.x,goal,12,dt);r.arms[i].rotation.x=THREE.MathUtils.damp(r.arms[i].rotation.x,-.07-goal*.22,8,dt);}
- r.body.rotation.x=motion?.10:.075;r.body.rotation.z=stride*.012;r.body.position.y=-.025+(motion?Math.cos(r.phase*2)*.007:Math.sin(elapsed*.9)*.003);r.head.rotation.x=.12;r.shadow.position.set(r.root.position.x,.07,r.root.position.z);
+ if(motion)r.phase+=dt*7.2;const stride=motion?Math.sin(r.phase):0;
+ for(let i=0;i<2;i++){const goal=stride*(i?1:-1)*.32;r.legs[i].rotation.x=THREE.MathUtils.damp(r.legs[i].rotation.x,goal,12,dt);r.arms[i].rotation.x=THREE.MathUtils.damp(r.arms[i].rotation.x,-.07-goal*.22,8,dt);}
+ r.body.rotation.x=motion?.10:.075;r.body.rotation.z=stride*.021;r.body.position.y=-.025+(motion?-Math.pow(Math.max(0,-Math.cos(r.phase*2)),3)*.032:Math.sin(elapsed*.9)*.003);r.head.rotation.x=.15+Math.sin(r.phase-.8)*.018;r.shadow.position.set(r.root.position.x,.07,r.root.position.z);
 }}
 
 function canMove(x:number,z:number){return x>-14.6&&x<14.6&&z>-10.4&&z<11.5&&!obstacles.some(o=>Math.hypot(x-o.x,z-o.z)<o.r+.35);}
@@ -182,18 +199,18 @@ function animate(){requestAnimationFrame(animate);const now=performance.now();co
   }
  }
  // A tired commute: grounded steps, rounded shoulders, very little arm swing.
- const previousStep=Math.floor(phase/Math.PI);
- if(moving){phase+=dt*8.5;if(Math.floor(phase/Math.PI)>previousStep)rustle(.9);}
+ const previousStep=Math.floor((phase+Math.PI/2)/Math.PI);
+ if(moving){phase+=dt*7.2;if(Math.floor((phase+Math.PI/2)/Math.PI)>previousStep)rustle(.9);}
  const stride=moving?Math.sin(phase):0;
  for(let i=0;i<2;i++){
-  const goal=stride*(i?1:-1)*.29;
+  const goal=stride*(i?1:-1)*.32;
   legs[i].rotation.x=THREE.MathUtils.damp(legs[i].rotation.x,goal,12,dt);
   arms[i].rotation.x=THREE.MathUtils.damp(arms[i].rotation.x,-.07-goal*.22,8,dt);
  }
- body.position.y=THREE.MathUtils.damp(body.position.y,-.025+(moving?Math.cos(phase*2)*.007:Math.sin(elapsed*.9)*.003),7,dt);
+ body.position.y=THREE.MathUtils.damp(body.position.y,-.025+(moving?-Math.pow(Math.max(0,-Math.cos(phase*2)),3)*.032:Math.sin(elapsed*.9)*.003),14,dt);
  body.rotation.x=THREE.MathUtils.damp(body.rotation.x,moving?.10:.075,5,dt);
- body.rotation.z=THREE.MathUtils.damp(body.rotation.z,stride*.012,7,dt);
- head.rotation.x=THREE.MathUtils.damp(head.rotation.x,.12+(moving?Math.sin(phase-.5)*.012:Math.sin(elapsed*.65)*.006),5,dt);
+ body.rotation.z=THREE.MathUtils.damp(body.rotation.z,stride*.021,7,dt);
+ head.rotation.x=THREE.MathUtils.damp(head.rotation.x,.15+(moving?Math.sin(phase-.8)*.018:Math.sin(elapsed*.65)*.006),5,dt);
  head.rotation.y=Math.sin(elapsed*.4)*.012;
  tail.rotation.x=THREE.MathUtils.damp(tail.rotation.x,moving?Math.sin(phase-.6)*.035:0,6,dt);
  contact.position.set(player.position.x,.07,player.position.z);
