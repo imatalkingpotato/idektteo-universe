@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import './style.css';
 import {Presence} from './presence';
+import {Activities} from './activities';
 import type {Visitor} from '../shared/protocol';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -8,8 +9,8 @@ app.innerHTML = `
   <div id="world" aria-label="종이 캐릭터로 걸어보는 중앙 로비"></div>
   <header class="hud"><a class="brand" href="#">IDEKTTEO<span>UNIVERSE <i>↗</i></span></a><div class="location"><span class="tiny">지금 머무는 곳</span><strong id="location">중앙 로비</strong></div><div class="version presence-panel"><span id="self-name">이름 없는 종이</span><strong id="visitor-count">로비 입장 전</strong><small id="connection" role="status">익명으로 함께 머무는 곳</small></div></header>
   <section id="welcome"><div class="welcome-copy"><span class="eyebrow">IDEKTTEO UNIVERSE · FIRST WALK</span><h1>잠깐,<br>종이가 되어볼까요.</h1><p>가볍게 걸어보고, 잠시 머물러 보세요.</p><button id="start">로비에 들어가기 <span>↗</span></button><small>이름 없이, 같은 로비에서 만나요.</small></div></section>
-  <div id="door-hint" hidden><span id="door-name"></span><button id="explore">공간 보기 <kbd>E</kbd></button></div>
-  <aside id="room-card" hidden><button class="close" aria-label="닫기">×</button><span class="eyebrow">NEXT SPACE</span><h2></h2><p></p><small>지금은 로비를 걷는 시제품이에요. 공간 안의 활동은 다음에 열려요.</small></aside>
+  <div id="door-hint" hidden><span id="door-name"></span><button id="explore">머무르기 <kbd>E</kbd></button></div>
+  <aside id="room-card" role="dialog" aria-modal="false" aria-labelledby="room-title" hidden><button class="close" aria-label="닫기">×</button><span class="eyebrow">TAKE YOUR TIME</span><h2 id="room-title"></h2><p></p><div id="activity"></div><button id="return-lobby">로비로 돌아가기</button></aside>
   <footer class="bottom"><div class="instructions"><span><kbd>W A S D</kbd> / 방향키 이동</span><span>드래그로 둘러보기 · 휠로 거리 조절</span><span class="click-help">바닥을 눌러도 걸어가요</span></div><div class="tools"><button id="home" title="시작 위치로 돌아가기" aria-label="시작 위치로 돌아가기">↺</button><button id="sound" aria-pressed="true">사각사각 <span>켜짐</span></button></div></footer>
   <div id="joystick" aria-label="이동 조이스틱"><div></div></div><div id="toast" role="status"></div>
 `;
@@ -136,12 +137,16 @@ function articulateWalk(rig:LegRig[],armRig:THREE.Object3D[],walkPhase:number,mo
  }
 }
 box(.39,.43,.16,teal,0,.96,-.31,body);box(.12,.055,.02,brass,0,.98,-.4,body);
+const coffeeCup=new THREE.Group();coffeeCup.visible=false;scene.add(coffeeCup);
+cylinder(.085,.15,paper,0,0,0,coffeeCup);cylinder(.07,.008,mat('#664432'),0,.077,0,coffeeCup);
+const handle=new THREE.Mesh(new THREE.TorusGeometry(.055,.014,5,12),paper);handle.position.x=.085;coffeeCup.add(handle);
 const shadowCanvas=document.createElement('canvas');shadowCanvas.width=128;shadowCanvas.height=128;const sc=shadowCanvas.getContext('2d')!;const grad=sc.createRadialGradient(64,64,4,64,64,62);grad.addColorStop(0,'rgba(56,46,30,.3)');grad.addColorStop(1,'rgba(56,46,30,0)');sc.fillStyle=grad;sc.fillRect(0,0,128,128);
 const contact=new THREE.Mesh(new THREE.PlaneGeometry(1.6,1.3),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(shadowCanvas),transparent:true,depthWrite:false}));contact.rotation.x=-Math.PI/2;contact.position.y=.07;contact.scale.setScalar(.85);scene.add(contact);
 const destinationRing=new THREE.Mesh(new THREE.RingGeometry(.18,.22,32),new THREE.MeshBasicMaterial({color:'#b16a4b',transparent:true,opacity:.7,side:THREE.DoubleSide}));destinationRing.rotation.x=-Math.PI/2;destinationRing.visible=false;scene.add(destinationRing);
 
 let started=false,muted=false,yaw=0,distance=10.2,phase=0,elapsed=0;
-let target:THREE.Vector3|null=null,activeRoom:Room|null=null;
+let target:THREE.Vector3|null=null,activeRoom:Room|null=null,openedRoom:Room|null=null;
+let savedView:{yaw:number;distance:number}|null=null;
 const keys=new Set<string>(),joy=new THREE.Vector2();
 let audio:AudioContext|undefined,noise:AudioBuffer|undefined;
 function unlockAudio(){if(muted)return;audio??=new AudioContext();void audio.resume();if(!noise){noise=audio.createBuffer(1,audio.sampleRate*.2,audio.sampleRate);const data=noise.getChannelData(0);for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;}}
@@ -167,14 +172,30 @@ function toast(message:string){const e=document.querySelector<HTMLDivElement>('#
 const welcome=document.querySelector<HTMLElement>('#welcome')!;
 document.querySelector('#start')!.addEventListener('click',()=>{started=true;welcome.classList.add('leaving');presence.start();unlockAudio();setTimeout(()=>welcome.hidden=true,700);});
 document.querySelector('#sound')!.addEventListener('click',()=>{muted=!muted;const b=document.querySelector<HTMLButtonElement>('#sound')!;b.setAttribute('aria-pressed',String(!muted));b.querySelector('span')!.textContent=muted?'꺼짐':'켜짐';if(!muted)unlockAudio();});
-function reset(){keys.clear();joy.set(0,0);player.position.set(0,0,7);player.rotation.y=Math.PI;yaw=0;distance=10.2;target=null;destinationRing.visible=false;closeCard();toast('처음 자리로 돌아왔어요.');}
+function reset(){closeCard();keys.clear();joy.set(0,0);player.position.set(0,0,7);player.rotation.y=Math.PI;yaw=0;distance=10.2;target=null;destinationRing.visible=false;toast('처음 자리로 돌아왔어요.');}
 document.querySelector('#home')!.addEventListener('click',reset);
 const card=document.querySelector<HTMLElement>('#room-card')!;
-function showRoom(){if(!activeRoom)return;target=null;keys.clear();card.querySelector('h2')!.textContent=activeRoom.name;card.querySelector('p')!.textContent=activeRoom.desc;card.hidden=false;}
-function closeCard(){card.hidden=true;}
-card.querySelector('.close')!.addEventListener('click',closeCard);document.querySelector('#explore')!.addEventListener('click',showRoom);
+const activities=new Activities(document.querySelector('#activity')!,toast);
+function showRoom(){
+ if(!activeRoom||openedRoom)return;
+ openedRoom=activeRoom;clearInput();savedView={yaw,distance};
+ yaw=activeRoom.group.rotation.y;distance=6.6;
+ card.querySelector('h2')!.textContent=activeRoom.name;card.querySelector('p')!.textContent=activeRoom.desc;
+ activities.open(activeRoom.name);card.hidden=false;
+ document.querySelector('#location')!.textContent=activeRoom.name;
+ document.querySelector<HTMLElement>('#door-hint')!.hidden=true;
+ card.querySelector<HTMLButtonElement>('.close')!.focus();
+}
+function closeCard(){
+ card.hidden=true;activities.stop();openedRoom=null;
+ if(savedView){yaw=savedView.yaw;distance=savedView.distance;savedView=null;}
+ document.querySelector('#location')!.textContent='중앙 로비';lastRoom='';
+}
+card.querySelector('.close')!.addEventListener('click',closeCard);
+document.querySelector('#return-lobby')!.addEventListener('click',()=>{closeCard();document.querySelector<HTMLButtonElement>('#explore')!.focus();});
+document.querySelector('#explore')!.addEventListener('click',showRoom);
 const movementKeys=['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'];
-addEventListener('keydown',(e)=>{if(!started)return;const k=e.key.toLowerCase();if(movementKeys.includes(k)){e.preventDefault();keys.add(k);target=null;destinationRing.visible=false;unlockAudio();}if(k==='e')showRoom();if(k==='escape')closeCard();});
+addEventListener('keydown',(e)=>{if(!started)return;const k=e.key.toLowerCase();if(!card.hidden&&k!=='escape')return;if(movementKeys.includes(k)){e.preventDefault();keys.add(k);target=null;destinationRing.visible=false;unlockAudio();}if(k==='e')showRoom();if(k==='escape')closeCard();});
 addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
 function clearInput(){keys.clear();joy.set(0,0);target=null;destinationRing.visible=false;drag=null;const knob=document.querySelector<HTMLElement>('#joystick div')!;knob.style.transform='translate(0,0)';}
 addEventListener('blur',clearInput);document.addEventListener('visibilitychange',()=>{if(document.hidden)clearInput();});
@@ -247,11 +268,18 @@ function animate(){requestAnimationFrame(animate);const now=performance.now();co
  head.rotation.x=THREE.MathUtils.damp(head.rotation.x,.15+(moving?Math.sin(phase-.8)*.018:Math.sin(elapsed*.65)*.006),5,dt);
  head.rotation.y=Math.sin(elapsed*.4)*.012;
  tail.rotation.x=THREE.MathUtils.damp(tail.rotation.x,moving?Math.sin(phase-.6)*.035:0,6,dt);
+ const activity=activities.tick(now);coffeeCup.visible=activity.kind==='coffee';
+ if(activity.kind==='coffee'){
+  const sip=Math.sin(Math.min(1,activity.progress*1.7)*Math.PI);
+  arms[1].rotation.x=-1.5-sip*.5;
+  coffeeCup.position.copy(player.localToWorld(new THREE.Vector3(.30,1.20+sip*.24,.32)));
+  coffeeCup.rotation.set(-sip*.3,player.rotation.y,0);coffeeCup.scale.setScalar(.85);
+ }
  contact.position.set(player.position.x,.07,player.position.z);
- focus.lerp(desired.copy(player.position).add(new THREE.Vector3(-Math.sin(yaw)*2,1.4,-Math.cos(yaw)*2)),1-Math.exp(-dt*6));
+ focus.lerp(desired.copy(openedRoom?openedRoom.point:player.position).add(new THREE.Vector3(-Math.sin(yaw)*(openedRoom ? .3 : 2),openedRoom?1.5:1.4,-Math.cos(yaw)*(openedRoom ? .3 : 2))),1-Math.exp(-dt*6));
  desired.set(Math.sin(yaw)*distance, distance*.30, Math.cos(yaw)*distance).add(focus);camera.position.lerp(desired,1-Math.exp(-dt*5));camera.lookAt(focus);
  activeRoom=started?rooms.find(r=>r.point.distanceTo(player.position)<3)??null:null;
- const roomName=activeRoom?.name??'';if(roomName!==lastRoom){document.querySelector<HTMLElement>('#door-hint')!.hidden=!activeRoom;document.querySelector('#door-name')!.textContent=roomName;lastRoom=roomName;}
+ const roomName=activeRoom?.name??'';if(roomName!==lastRoom){document.querySelector<HTMLElement>('#door-hint')!.hidden=!activeRoom||!!openedRoom;document.querySelector('#door-name')!.textContent=roomName;lastRoom=roomName;}
  if(started)presence.send({x:player.position.x,z:player.position.z,yaw:player.rotation.y,moving});
  animateRemotes(dt,now);
  renderer.render(scene,camera);
