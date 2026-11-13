@@ -95,8 +95,46 @@ const seam=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Ve
 const top=new THREE.Mesh(new THREE.ConeGeometry(.68,.26,4),paper);top.rotation.y=Math.PI/4;top.position.y=.5;top.scale.z=.7;top.castShadow=true;head.add(top);
 const scarf=box(.65,.13,.55,coral,0,1.29,0,body);scarf.rotation.z=-.08;scarf.name="accent-scarf";
 const tail=box(.2,.4,.05,coral,.19,1.08,-.34,body);tail.rotation.z=.2;tail.name="accent-tail";
-const arms:THREE.Group[]=[],legs:THREE.Group[]=[];
-for(const side of [-1,1]){const arm=new THREE.Group();arm.position.set(side*.37,1.11,0);const a=box(.17,.5,.2,paper,side*.07,-.19,0,arm);a.rotation.z=side*.18;body.add(arm);arm.name=`arm-${arms.length}`;arms.push(arm);const leg=new THREE.Group();leg.position.set(side*.18,.58,0);box(.23,.4,.25,fold,0,-.19,0,leg);box(.27,.14,.38,paper,0,-.45,.06,leg);player.add(leg);leg.name=`leg-${legs.length}`;legs.push(leg);}
+type LegRig={hip:THREE.Object3D;knee:THREE.Object3D;ankle:THREE.Object3D};
+const arms:THREE.Group[]=[],legs:LegRig[]=[];
+for(const side of [-1,1]){
+ const index=legs.length;
+ const arm=new THREE.Group();arm.position.set(side*.37,1.11,0);
+ const a=box(.17,.5,.2,paper,side*.07,-.19,0,arm);a.rotation.z=side*.18;
+ body.add(arm);arm.name=`arm-${index}`;arms.push(arm);
+ const hip=new THREE.Group();hip.position.set(side*.18,.58,0);hip.name=`leg-${index}`;
+ box(.22,.215,.23,fold,0,-.108,0,hip);
+ const knee=new THREE.Group();knee.position.y=-.235;knee.name=`knee-${index}`;hip.add(knee);
+ // Separate folded-paper panels leave a visible crease at the bending knee.
+ box(.225,.045,.245,paper,0,0,0,knee);
+ box(.195,.205,.21,fold,0,-.112,0,knee);
+ const ankle=new THREE.Group();ankle.position.y=-.235;ankle.name=`ankle-${index}`;knee.add(ankle);
+ box(.27,.14,.38,paper,0,0,.06,ankle);
+ player.add(hip);legs.push({hip,knee,ankle});
+}
+function legRig(root:THREE.Object3D,index:number):LegRig{
+ return {hip:root.getObjectByName(`leg-${index}`)!,knee:root.getObjectByName(`knee-${index}`)!,ankle:root.getObjectByName(`ankle-${index}`)!};
+}
+function articulateWalk(rig:LegRig[],armRig:THREE.Object3D[],walkPhase:number,moving:boolean,dt:number){
+ for(let i=0;i<2;i++){
+  const cycle=((walkPhase/(Math.PI*2)+i*.5)%1+1)%1;
+  const swing=Math.max(0,(cycle-.6)/.4);
+  const travel=cycle<.6?.13*(1-2*cycle/.6):-.13+.26*(swing*swing*(3-2*swing));
+  const lift=moving?.10*Math.pow(Math.sin(swing*Math.PI),1.4):0;
+  const pitch=moving&&cycle>=.6?-.16*Math.sin(swing*Math.PI*2):0;
+  const z=moving?travel:0;
+  // Solve hip/knee from the ankle target: the stance sole stays level on the floor.
+  const down=.58-(.135+lift+Math.abs(Math.sin(pitch))*.25);
+  const reach=Math.min(.4699,Math.hypot(down,z));
+  const bend=Math.acos(reach/.47);
+  const hipAngle=Math.atan2(-z,down)-bend;
+  const leg=rig[i];
+  leg.hip.rotation.x=THREE.MathUtils.damp(leg.hip.rotation.x,hipAngle,20,dt);
+  leg.knee.rotation.x=THREE.MathUtils.damp(leg.knee.rotation.x,bend*2,20,dt);
+  leg.ankle.rotation.x=pitch-leg.hip.rotation.x-leg.knee.rotation.x;
+  armRig[i].rotation.x=THREE.MathUtils.damp(armRig[i].rotation.x,-.07+z*.55,8,dt);
+ }
+}
 box(.39,.43,.16,teal,0,.96,-.31,body);box(.12,.055,.02,brass,0,.98,-.4,body);
 const shadowCanvas=document.createElement('canvas');shadowCanvas.width=128;shadowCanvas.height=128;const sc=shadowCanvas.getContext('2d')!;const grad=sc.createRadialGradient(64,64,4,64,64,62);grad.addColorStop(0,'rgba(56,46,30,.3)');grad.addColorStop(1,'rgba(56,46,30,0)');sc.fillStyle=grad;sc.fillRect(0,0,128,128);
 const contact=new THREE.Mesh(new THREE.PlaneGeometry(1.6,1.3),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(shadowCanvas),transparent:true,depthWrite:false}));contact.rotation.x=-Math.PI/2;contact.position.y=.07;contact.scale.setScalar(.85);scene.add(contact);
@@ -154,7 +192,7 @@ stick.addEventListener('pointerdown',e=>{if(!started)return;joyPointer=e.pointer
 for(const event of ['pointerup','pointercancel','lostpointercapture'])stick.addEventListener(event,()=>{joyPointer=null;joy.set(0,0);stick.querySelector<HTMLElement>('div')!.style.transform='translate(0,0)';});
 
 
-type Remote={root:THREE.Group;body:THREE.Object3D;head:THREE.Object3D;arms:THREE.Object3D[];legs:THREE.Object3D[];shadow:THREE.Mesh;tag:THREE.Sprite;target:Visitor;phase:number;lastUpdate:number};
+type Remote={root:THREE.Group;body:THREE.Object3D;head:THREE.Object3D;arms:THREE.Object3D[];legs:LegRig[];shadow:THREE.Mesh;tag:THREE.Sprite;target:Visitor;phase:number;lastUpdate:number};
 const remotes=new Map<string,Remote>();
 let connected=false;
 function tintAvatar(root:THREE.Object3D,color:string){for(const name of ['accent-scarf','accent-tail']){const mesh=root.getObjectByName(name) as THREE.Mesh;mesh.material=new THREE.MeshStandardMaterial({color,roughness:.94});}}
@@ -163,7 +201,7 @@ function removeRemote(id:string){const r=remotes.get(id);if(!r)return;scene.remo
 function remoteTag(name:string,color:string){const c=document.createElement('canvas');c.width=384;c.height=96;const cx=c.getContext('2d')!;cx.fillStyle='#f8f3e8e8';cx.beginPath();cx.roundRect(20,10,344,76,30);cx.fill();cx.fillStyle=color;cx.beginPath();cx.arc(69,48,9,0,Math.PI*2);cx.fill();cx.fillStyle='#425548';cx.font='500 33px "Apple SD Gothic Neo",sans-serif';cx.textAlign='center';cx.textBaseline='middle';cx.fillText(name,211,49);const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;const tag=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,depthTest:true,depthWrite:false}));tag.position.set(0,2.55,0);tag.scale.set(1.65,.42,1);return tag;}
 function updateRemote(visitor:Visitor){
  let r=remotes.get(visitor.id);
- if(!r){const root=player.clone(true);tintAvatar(root,visitor.color);root.position.set(visitor.x,0,visitor.z);root.rotation.y=visitor.yaw;const shadow=contact.clone();scene.add(root,shadow);const tag=remoteTag(visitor.name,visitor.color);root.add(tag);r={root,body:root.getObjectByName('paper-body')!,head:root.getObjectByName('paper-head')!,arms:[root.getObjectByName('arm-0')!,root.getObjectByName('arm-1')!],legs:[root.getObjectByName('leg-0')!,root.getObjectByName('leg-1')!],shadow,tag,target:visitor,phase:0,lastUpdate:performance.now()};remotes.set(visitor.id,r);}
+ if(!r){const root=player.clone(true);tintAvatar(root,visitor.color);root.position.set(visitor.x,0,visitor.z);root.rotation.y=visitor.yaw;const shadow=contact.clone();scene.add(root,shadow);const tag=remoteTag(visitor.name,visitor.color);root.add(tag);r={root,body:root.getObjectByName('paper-body')!,head:root.getObjectByName('paper-head')!,arms:[root.getObjectByName('arm-0')!,root.getObjectByName('arm-1')!],legs:[legRig(root,0),legRig(root,1)],shadow,tag,target:visitor,phase:0,lastUpdate:performance.now()};remotes.set(visitor.id,r);}
  r.target=visitor;r.lastUpdate=performance.now();updateCount();
 }
 const presence=new Presence({
@@ -178,7 +216,7 @@ function animateRemotes(dt:number,now:number){for(const r of remotes.values()){
  r.root.position.x=THREE.MathUtils.damp(r.root.position.x,r.target.x,13,dt);r.root.position.z=THREE.MathUtils.damp(r.root.position.z,r.target.z,13,dt);
  r.root.rotation.y+=Math.atan2(Math.sin(r.target.yaw-r.root.rotation.y),Math.cos(r.target.yaw-r.root.rotation.y))*Math.min(1,dt*12);
  if(motion)r.phase+=dt*7.2;const stride=motion?Math.sin(r.phase):0;
- for(let i=0;i<2;i++){const goal=stride*(i?1:-1)*.32;r.legs[i].rotation.x=THREE.MathUtils.damp(r.legs[i].rotation.x,goal,12,dt);r.arms[i].rotation.x=THREE.MathUtils.damp(r.arms[i].rotation.x,-.07-goal*.22,8,dt);}
+ articulateWalk(r.legs,r.arms,r.phase,motion,dt);
  r.body.rotation.x=motion?.10:.075;r.body.rotation.z=stride*.021;r.body.position.y=-.025+(motion?-Math.pow(Math.max(0,-Math.cos(r.phase*2)),3)*.032:Math.sin(elapsed*.9)*.003);r.head.rotation.x=.15+Math.sin(r.phase-.8)*.018;r.shadow.position.set(r.root.position.x,.07,r.root.position.z);
 }}
 
@@ -199,14 +237,10 @@ function animate(){requestAnimationFrame(animate);const now=performance.now();co
   }
  }
  // A tired commute: grounded steps, rounded shoulders, very little arm swing.
- const previousStep=Math.floor((phase+Math.PI/2)/Math.PI);
- if(moving){phase+=dt*7.2;if(Math.floor((phase+Math.PI/2)/Math.PI)>previousStep)rustle(.9);}
+ const previousStep=Math.floor(phase/Math.PI);
+ if(moving){phase+=dt*7.2;if(Math.floor(phase/Math.PI)>previousStep)rustle(.9);}
  const stride=moving?Math.sin(phase):0;
- for(let i=0;i<2;i++){
-  const goal=stride*(i?1:-1)*.32;
-  legs[i].rotation.x=THREE.MathUtils.damp(legs[i].rotation.x,goal,12,dt);
-  arms[i].rotation.x=THREE.MathUtils.damp(arms[i].rotation.x,-.07-goal*.22,8,dt);
- }
+ articulateWalk(legs,arms,phase,moving,dt);
  body.position.y=THREE.MathUtils.damp(body.position.y,-.025+(moving?-Math.pow(Math.max(0,-Math.cos(phase*2)),3)*.032:Math.sin(elapsed*.9)*.003),14,dt);
  body.rotation.x=THREE.MathUtils.damp(body.rotation.x,moving?.10:.075,5,dt);
  body.rotation.z=THREE.MathUtils.damp(body.rotation.z,stride*.021,7,dt);
